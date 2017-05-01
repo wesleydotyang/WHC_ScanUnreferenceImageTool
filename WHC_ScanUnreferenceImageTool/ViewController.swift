@@ -44,12 +44,12 @@ class ViewController: NSViewController {
     
     @IBOutlet weak var iOSRadio: NSButton!
     @IBOutlet weak var androidRadio: NSButton!
+    @IBOutlet weak var noPodsCheckButton: NSButton!
     
     fileprivate var filePathArray = [String]()
     fileprivate var imageNameArray = [String]()
     fileprivate var imageFileNameMap = [String: String]()
     
-    fileprivate var noReferenceImageNameArray = [String]()
     fileprivate let fileManager = FileManager.default
     fileprivate var scanProjectType = WHCScanProjectType.iOS
     
@@ -115,46 +115,62 @@ class ViewController: NSViewController {
             DispatchQueue.global().async(execute: {
                 self.execScan(directoryFileNameArray, path: self.directoryText.stringValue)
                 self.processBar.doubleValue = 0;
-                let imageCount = self.imageNameArray.count
-                for (index,imageName) in self.imageNameArray.enumerated() {
-                    var isReference = false
-                    DispatchQueue.main.async(execute: {
-                        self.processBar.doubleValue = Double(index + 1) / Double(imageCount)
-                    })
-                    for filePath in self.filePathArray {
-                        DispatchQueue.main.async(execute: {
-                            self.progressLabel.stringValue = filePath
-                        })
-                        let bookData = try! Data(contentsOf: URL(fileURLWithPath: filePath), options: NSData.ReadingOptions.mappedIfSafe);
-                        let fileContent = NSString(data: bookData, encoding: String.Encoding.utf8.rawValue)
-                        if fileContent != nil {
-                            switch self.scanProjectType {
-                                case .android:
-                                    if fileContent!.contains("@drawable/" + imageName) ||
-                                       fileContent!.contains("R.drawable." + imageName) {
-                                        isReference = true
-                                        break
-                                    }
-                                case .iOS:
-                                    if fileContent!.contains("\"" + imageName) {
-                                        isReference = true
-                                        break
-                                    }
-                            }
+                for (fileIndex,filePath) in self.filePathArray.enumerated() {
+                    
+                    let bookData = try! Data(contentsOf: URL(fileURLWithPath: filePath), options: NSData.ReadingOptions.mappedIfSafe);
+                    let fileContent = NSString(data: bookData, encoding: String.Encoding.utf8.rawValue)
+                   
+                    if fileContent == nil {
+                        continue;
+                    }
+                    
+                    for (_,imageName) in self.imageNameArray.enumerated() {
+                        var isReference = false;
+                        
+                        switch self.scanProjectType {
+                            case .android:
+                                if fileContent!.contains("@drawable/" + imageName) ||
+                                   fileContent!.contains("R.drawable." + imageName) {
+                                    isReference = true;
+                                    break
+                                }
+                            case .iOS:
+                                if fileContent!.contains("\"" + imageName)
+                                || fileContent!.contains("/"+imageName){
+                                    isReference = true;
+                                    break
+                                }
                         }
+                        
+                        if isReference {
+                            //remove this image
+                            self.imageNameArray.remove(at: self.imageNameArray.index(of: imageName)!)
+                            
+                            let originTxt = self.resultContentView.string == nil ? "" : self.resultContentView.string!
+                            DispatchQueue.main.sync(execute: {
+                                let referenceImageName = ">>>>> " + self.imageFileNameMap[imageName]! + "\t\t\t\t[Referenced by " + filePath.components(separatedBy:"/").last! + "]"
+                                self.setResultContent(content: originTxt + referenceImageName + "\n")
+                            })
+                        }
+                        
+                    }//end all image scan
+                    
+                    DispatchQueue.main.async(execute: {
+                        self.progressLabel.stringValue = filePath
+                        self.processBar.doubleValue = Double(fileIndex + 1) / Double(self.filePathArray.count)
+                    })
+                    
+                }//end all file scan
+                
+                let originTxt = self.resultContentView.string == nil ? "" : self.resultContentView.string!
+                DispatchQueue.main.sync(execute: {
+                    var report = "\n\n\n-----[Below are images not referenced]-----\n";
+                    for imageName in self.imageNameArray{
+                        report += ">>>>> " + self.imageFileNameMap[imageName]! + "\n"
                     }
-                    if !isReference {
-                        self.noReferenceImageNameArray.append(imageName)
-                        let originTxt = self.resultContentView.string == nil ? "" : self.resultContentView.string!
-                        DispatchQueue.main.sync(execute: {
-                            var noReferenceImageName = ">>>>> " + self.imageFileNameMap[imageName]!
-                            if noReferenceImageName.hasSuffix(".imageset") {
-                                noReferenceImageName = ">>>>> " + imageName + "      [该图片删除请去项目的Images.xcassets里删除]"
-                            }
-                            self.setResultContent(content: originTxt + noReferenceImageName + "\n")
-                        })
-                    }
-                }
+                    self.setResultContent(content: originTxt + report + "\n")
+                })
+                
                 DispatchQueue.main.async {
                     sender.isEnabled = true
                     let alert = NSAlert()
@@ -185,8 +201,8 @@ class ViewController: NSViewController {
         }else {
             sender.isEnabled = true
             let alert = NSAlert()
-            alert.messageText = "恭喜您WHC提示您请选择扫描项目目录"
-            alert.addButton(withTitle: "确定")
+            alert.messageText = "Please select a project folder"
+            alert.addButton(withTitle: "OK")
             alert.runModal()
         }
     }
@@ -197,6 +213,13 @@ class ViewController: NSViewController {
                 var isDirectory = ObjCBool(true)
                 let pathName = path + "/" + fileName
                 let exist = fileManager.fileExists(atPath: pathName, isDirectory: &isDirectory)
+                
+                //filter pods file
+                let noPods = self.noPodsCheckButton.state == NSOnState;
+                if noPods && (fileName == "Pods" || fileName == "Carthage") && exist && isDirectory.boolValue {
+                    continue;
+                }
+                
                 if exist && isDirectory.boolValue && !fileName.hasSuffix(".imageset") && !fileName.hasSuffix(".bundle") && fileName != "AppIcon.appiconset" && fileName != "LaunchImage.launchimage" {
                     let tempDirectoryFileNameArray = try! fileManager.contentsOfDirectory(atPath: pathName)
                     self.execScan(tempDirectoryFileNameArray, path: pathName)
@@ -255,7 +278,7 @@ class ViewController: NSViewController {
                                         self.filePathArray.append(pathName)
                                     }
                                 case .iOS:
-                                    if suff == "m" || suff == "swift" || suff == "xib" || suff == "storyboard"{
+                                    if suff == "m" || suff == "mm" || suff == "playground" || suff == "swift" || suff == "xib" || suff == "storyboard"{
                                         self.filePathArray.append(pathName)
                                     }
                             }
